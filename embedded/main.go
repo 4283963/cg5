@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"windturbine-embedded/internal/anemometer"
 	"windturbine-embedded/internal/compass"
 	"windturbine-embedded/internal/config"
 	"windturbine-embedded/internal/motor"
@@ -18,6 +19,9 @@ import (
 func main() {
 	configPath := flag.String("config", "config.yaml", "配置文件路径")
 	initialAngle := flag.Float64("angle", 0.0, "初始方位角（度）")
+	initialWindSpeed := flag.Float64("wind", 8.0, "初始风速（m/s）")
+	initialWindDir := flag.Float64("winddir", 0.0, "初始风向（度）")
+	stormMode := flag.Bool("storm", false, "模拟台风模式")
 	flag.Parse()
 
 	log.SetOutput(os.Stdout)
@@ -46,18 +50,26 @@ func main() {
 	compassSensor.Start()
 	defer compassSensor.Stop()
 
+	windSensor := anemometer.NewMockAnemometer(*initialWindSpeed, *initialWindDir)
+	windSensor.Start()
+	defer windSensor.Stop()
+
+	if *stormMode {
+		windSensor.SimulateStorm(true)
+	}
+
 	motorCtrl := motor.NewMotorController(&cfg.Motor, serialPort, compassSensor)
 	motorCtrl.Start(*initialAngle)
 	defer motorCtrl.Stop()
 
-	ws := wsclient.NewWSClient(cfg, motorCtrl)
+	ws := wsclient.NewWSClient(cfg, motorCtrl, windSensor)
 	ws.Start()
 	defer ws.Stop()
 
 	log.Println("========================================")
 	log.Println("  系统启动完成，等待指令...")
 	log.Println("========================================")
-	printStatus(cfg, motorCtrl, *initialAngle)
+	printStatus(cfg, motorCtrl, *initialAngle, windSensor)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -67,7 +79,7 @@ func main() {
 	log.Println("系统已停止")
 }
 
-func printStatus(cfg *config.Config, motorCtrl *motor.MotorController, initialAngle float64) {
+func printStatus(cfg *config.Config, motorCtrl *motor.MotorController, initialAngle float64, windSensor anemometer.Anemometer) {
 	log.Println("-------- 运行状态 --------")
 	log.Printf("  设备ID:        %s", cfg.DeviceID)
 	log.Printf("  后端地址:      %s/%s", cfg.Backend.WSUrl, cfg.DeviceID)
@@ -76,7 +88,10 @@ func printStatus(cfg *config.Config, motorCtrl *motor.MotorController, initialAn
 	log.Printf("  定位容差:      %.2f°", cfg.Motor.ToleranceDeg)
 	log.Printf("  角度上报间隔:  %dms", cfg.Report.CurrentAngleIntervalMs)
 	log.Printf("  心跳上报间隔:  %ds", cfg.Report.HeartbeatIntervalSec)
+	log.Printf("  风速上报间隔:  %dms", cfg.Report.WindSpeedIntervalMs)
 	log.Printf("  串口模式:      %s", getSerialMode(cfg.Serial.UseMock))
+	log.Printf("  当前风速:      %.1f m/s", windSensor.GetWindSpeed())
+	log.Printf("  当前风向:      %.1f°", windSensor.GetWindDirection())
 	log.Println("--------------------------")
 	fmt.Println()
 }

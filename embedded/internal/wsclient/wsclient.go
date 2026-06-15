@@ -10,20 +10,22 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"windturbine-embedded/internal/anemometer"
 	"windturbine-embedded/internal/config"
 	"windturbine-embedded/internal/motor"
 )
 
 type TargetAngleMessage struct {
-	Type            string  `json:"type"`
-	DeviceID        string  `json:"deviceId"`
-	Angle           float64 `json:"angle"`
-	Data            float64 `json:"data"`
-	TargetAngle     float64 `json:"targetAngle"`
-	CurrentAngle    float64 `json:"currentAngle"`
-	ShortestDiff    float64 `json:"shortestDiff"`
-	RotationDirection int   `json:"rotationDirection"`
-	RotationDegrees float64 `json:"rotationDegrees"`
+	Type              string  `json:"type"`
+	DeviceID          string  `json:"deviceId"`
+	Angle             float64 `json:"angle"`
+	Data              float64 `json:"data"`
+	TargetAngle       float64 `json:"targetAngle"`
+	CurrentAngle      float64 `json:"currentAngle"`
+	ShortestDiff      float64 `json:"shortestDiff"`
+	RotationDirection int     `json:"rotationDirection"`
+	RotationDegrees   float64 `json:"rotationDegrees"`
+	Reason            string  `json:"reason"`
 }
 
 type CurrentAngleMessage struct {
@@ -32,6 +34,37 @@ type CurrentAngleMessage struct {
 	Angle    float64          `json:"angle"`
 	Data     float64          `json:"data"`
 	Status   motor.MotorStatus `json:"status"`
+}
+
+type WindSpeedMessage struct {
+	Type        string  `json:"type"`
+	DeviceID    string  `json:"deviceId"`
+	WindSpeed   float64 `json:"windSpeed"`
+	WindDirection float64 `json:"windDirection"`
+	Data        float64 `json:"data"`
+	Timestamp   int64   `json:"timestamp"`
+}
+
+type ProtectionControlMessage struct {
+	Type              string `json:"type"`
+	DeviceID          string `json:"deviceId"`
+	ProtectionEnabled bool   `json:"protectionEnabled"`
+	AutoUnloadEnabled bool   `json:"autoUnloadEnabled"`
+	UnloadAngleOffset float64 `json:"unloadAngleOffset"`
+	WindSpeedThreshold float64 `json:"windSpeedThreshold"`
+}
+
+type ProtectionStatusMessage struct {
+	Type                string  `json:"type"`
+	DeviceID            string  `json:"deviceId"`
+	ProtectionEnabled   bool    `json:"protectionEnabled"`
+	ProtectionActive    bool    `json:"protectionActive"`
+	AutoUnloadEnabled   bool    `json:"autoUnloadEnabled"`
+	CurrentWindSpeed    float64 `json:"currentWindSpeed"`
+	WindSpeedThreshold  float64 `json:"windSpeedThreshold"`
+	UnloadTargetAngle   float64 `json:"unloadTargetAngle"`
+	CurrentNacelleAngle float64 `json:"currentNacelleAngle"`
+	Reason              string  `json:"reason"`
 }
 
 type HeartbeatMessage struct {
@@ -43,6 +76,7 @@ type HeartbeatMessage struct {
 type WSClient struct {
 	cfg             *config.Config
 	motorCtrl       *motor.MotorController
+	windSensor      anemometer.Anemometer
 	conn            *websocket.Conn
 	mu              sync.Mutex
 	stopChan        chan struct{}
@@ -50,15 +84,27 @@ type WSClient struct {
 	connected       bool
 	running         bool
 	reconnectDelay  time.Duration
+
+	protectionEnabled    bool
+	autoUnloadEnabled    bool
+	protectionActive     bool
+	unloadAngleOffset    float64
+	windSpeedThreshold   float64
+	lastUnloadAngle      float64
 }
 
-func NewWSClient(cfg *config.Config, motorCtrl *motor.MotorController) *WSClient {
+func NewWSClient(cfg *config.Config, motorCtrl *motor.MotorController, windSensor anemometer.Anemometer) *WSClient {
 	return &WSClient{
-		cfg:            cfg,
-		motorCtrl:      motorCtrl,
-		stopChan:       make(chan struct{}),
-		reconnectChan:  make(chan struct{}, 1),
-		reconnectDelay: 3 * time.Second,
+		cfg:                cfg,
+		motorCtrl:          motorCtrl,
+		windSensor:         windSensor,
+		stopChan:           make(chan struct{}),
+		reconnectChan:      make(chan struct{}, 1),
+		reconnectDelay:     3 * time.Second,
+		protectionEnabled:  true,
+		autoUnloadEnabled:  true,
+		unloadAngleOffset:  30.0,
+		windSpeedThreshold: 25.0,
 	}
 }
 
@@ -98,6 +144,12 @@ func (w *WSClient) run() {
 	heartbeatTicker := time.NewTicker(time.Duration(w.cfg.Report.HeartbeatIntervalSec) * time.Second)
 	defer heartbeatTicker.Stop()
 
+	windTicker := time.NewTicker(time.Duration(w.cfg.Report.WindSpeedIntervalMs) * time.Millisecond)
+	defer windTicker.Stop()
+
+	protectionTicker := time.NewTicker(500 * time.Millisecond)
+	defer protectionTicker.Stop()
+
 	for {
 		select {
 		case <-w.stopChan:
@@ -106,6 +158,58 @@ func (w *WSClient) run() {
 			w.sendCurrentAngle()
 		case <-heartbeatTicker.C:
 			w.sendHeartbeat()
+		case <-windTicker.C:
+			w.sendWindSpeed()
+		case <-protectionTicker.C:
+			w.checkWindProtection()
+		}
+	}
+}
+
+func (w *WSClient) checkWindProtection() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.protectionEnabled || !w.autoUnloadEnabled {
+		return
+	}
+
+	windSpeed := w.windSensor.GetWindSpeed()
+	windDirection := w.windSensor.GetWindDirection()
+	wasActive := w.protectionActive
+
+	if windSpeed >= w.windSpeedThreshold {
+		if !w.protectionActive {
+			w.protectionActive = true
+			log.Printf("========================================")
+			log.Printf("🌪️  强风保护已激活！")
+			log.Printf("  当前风速:    %.1f m/s (阈值: %.1f m/s)", windSpeed, w.windSpeedThreshold)
+			log.Printf("  当前风向:    %.1f°", windDirection)
+			log.Printf("  卸载偏移角:  +%.1f°", w.unloadAngleOffset)
+			log.Printf("========================================")
+		}
+
+		unloadAngle := normalizeAngle(windDirection + w.unloadAngleOffset)
+		currentAngle := w.motorCtrl.GetCurrentAngle()
+
+		if math.Abs(shortestAngleDiff(currentAngle, unloadAngle)) > 1.0 {
+			log.Printf("[强风保护] 自动调整偏航角: 风向%.1f° → 卸载角%.1f° (偏移+%.1f°)",
+				windDirection, unloadAngle, w.unloadAngleOffset)
+			w.motorCtrl.SetTargetAngle(unloadAngle)
+			w.lastUnloadAngle = unloadAngle
+		}
+
+		if !wasActive || w.protectionActive {
+			go w.sendProtectionStatus("强风保护中，自动卸载已启动")
+		}
+	} else {
+		if w.protectionActive {
+			w.protectionActive = false
+			log.Printf("========================================")
+			log.Printf("✅ 强风保护已解除")
+			log.Printf("  当前风速:    %.1f m/s (阈值: %.1f m/s)", windSpeed, w.windSpeedThreshold)
+			log.Printf("========================================")
+			go w.sendProtectionStatus("风速恢复正常，保护已解除")
 		}
 	}
 }
@@ -197,25 +301,58 @@ func (w *WSClient) handleMessage(msg []byte) {
 
 	switch base.Type {
 	case "target_angle", "SET_ANGLE":
-		var target TargetAngleMessage
-		if err := json.Unmarshal(msg, &target); err != nil {
-			log.Printf("[WebSocket] 解析目标角度消息失败: %v", err)
-			return
-		}
-		angle := target.Angle
-		if angle == 0 && target.Data != 0 {
-			angle = target.Data
-		}
-		log.Printf("[WebSocket] 收到目标角度指令: %.2f°", angle)
-		w.motorCtrl.SetTargetAngle(angle)
+		w.handleSetAngle(msg, false)
 
 	case "SAFE_SET_ANGLE":
-		var target TargetAngleMessage
-		if err := json.Unmarshal(msg, &target); err != nil {
-			log.Printf("[WebSocket] 解析安全目标角度消息失败: %v", err)
-			return
+		w.handleSetAngle(msg, true)
+
+	case "PROTECTION_CONTROL":
+		w.handleProtectionControl(msg)
+
+	case "PROTECTION_STATUS_QUERY":
+		go w.sendProtectionStatus("状态查询响应")
+
+	case "SET_WIND_SPEED":
+		var cmd struct {
+			WindSpeed float64 `json:"windSpeed"`
+		}
+		if err := json.Unmarshal(msg, &cmd); err == nil {
+			w.windSensor.SetWindSpeed(cmd.WindSpeed)
 		}
 
+	case "SIMULATE_STORM":
+		var cmd struct {
+			Enable bool `json:"enable"`
+		}
+		if err := json.Unmarshal(msg, &cmd); err == nil {
+			if sim, ok := w.windSensor.(*anemometer.MockAnemometer); ok {
+				sim.SimulateStorm(cmd.Enable)
+			}
+		}
+
+	default:
+		log.Printf("[WebSocket] 收到未知消息类型: %s", base.Type)
+	}
+}
+
+func (w *WSClient) handleSetAngle(msg []byte, isSafe bool) {
+	var target TargetAngleMessage
+	if err := json.Unmarshal(msg, &target); err != nil {
+		log.Printf("[WebSocket] 解析角度指令失败: %v", err)
+		return
+	}
+
+	w.mu.Lock()
+	protectionActive := w.protectionActive
+	w.mu.Unlock()
+
+	if protectionActive {
+		log.Printf("[强风保护] 手动控制已锁定，忽略角度指令: %.2f°", target.TargetAngle)
+		log.Printf("[强风保护] 原因: %s", target.Reason)
+		return
+	}
+
+	if isSafe {
 		log.Printf("========================================")
 		log.Printf("🔒 收到安全角度指令 (SAFE_SET_ANGLE)")
 		log.Printf("  设备ID:         %s", target.DeviceID)
@@ -238,36 +375,48 @@ func (w *WSClient) handleMessage(msg []byte) {
 				math.Abs(target.ShortestDiff))
 			return
 		}
-
-		finalAngle := target.TargetAngle
-		if finalAngle == 0 && target.Data != 0 {
-			finalAngle = target.Data
-		}
-		if finalAngle == 0 && target.Angle != 0 {
-			finalAngle = target.Angle
-		}
-
-		log.Printf("[WebSocket] 执行安全目标角度指令: %.2f° (方向: %s, 旋转: %.2f°)",
-			finalAngle,
-			getDirectionString(target.RotationDirection),
-			math.Abs(target.RotationDegrees))
-
-		w.motorCtrl.SetTargetAngle(finalAngle)
-
-	default:
-		log.Printf("[WebSocket] 收到未知消息类型: %s, 原始消息: %s", base.Type, string(msg))
 	}
+
+	finalAngle := target.TargetAngle
+	if finalAngle == 0 && target.Data != 0 {
+		finalAngle = target.Data
+	}
+	if finalAngle == 0 && target.Angle != 0 {
+		finalAngle = target.Angle
+	}
+
+	log.Printf("[WebSocket] 执行目标角度指令: %.2f°", finalAngle)
+	w.motorCtrl.SetTargetAngle(finalAngle)
 }
 
-func getDirectionString(direction int) string {
-	switch direction {
-	case 1:
-		return "顺时针"
-	case -1:
-		return "逆时针"
-	default:
-		return "无"
+func (w *WSClient) handleProtectionControl(msg []byte) {
+	var cmd ProtectionControlMessage
+	if err := json.Unmarshal(msg, &cmd); err != nil {
+		log.Printf("[WebSocket] 解析保护控制指令失败: %v", err)
+		return
 	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.protectionEnabled = cmd.ProtectionEnabled
+	w.autoUnloadEnabled = cmd.AutoUnloadEnabled
+	if cmd.UnloadAngleOffset > 0 {
+		w.unloadAngleOffset = cmd.UnloadAngleOffset
+	}
+	if cmd.WindSpeedThreshold > 0 {
+		w.windSpeedThreshold = cmd.WindSpeedThreshold
+	}
+
+	log.Printf("========================================")
+	log.Printf("⚙️  保护控制参数已更新")
+	log.Printf("  保护功能:       %s", boolToString(w.protectionEnabled))
+	log.Printf("  自动卸载:       %s", boolToString(w.autoUnloadEnabled))
+	log.Printf("  卸载偏移角:     %.1f°", w.unloadAngleOffset)
+	log.Printf("  风速阈值:       %.1f m/s", w.windSpeedThreshold)
+	log.Printf("========================================")
+
+	go w.sendProtectionStatus("保护参数已更新")
 }
 
 func (w *WSClient) sendCurrentAngle() {
@@ -306,6 +455,87 @@ func (w *WSClient) sendCurrentAngle() {
 	log.Printf("[WebSocket] 上报当前角度: %.1f°, 状态: %s", angle, status)
 }
 
+func (w *WSClient) sendWindSpeed() {
+	w.mu.Lock()
+	conn := w.conn
+	connected := w.connected
+	w.mu.Unlock()
+
+	if !connected || conn == nil {
+		return
+	}
+
+	windSpeed := w.windSensor.GetWindSpeed()
+	windDirection := w.windSensor.GetWindDirection()
+
+	msg := WindSpeedMessage{
+		Type:          "WIND_SPEED_REPORT",
+		DeviceID:      w.cfg.DeviceID,
+		WindSpeed:     windSpeed,
+		WindDirection: windDirection,
+		Data:          windSpeed,
+		Timestamp:     time.Now().Unix(),
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[WebSocket] 序列化风速消息失败: %v", err)
+		return
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		log.Printf("[WebSocket] 发送风速消息失败: %v", err)
+		w.disconnect()
+		return
+	}
+
+	log.Printf("[WebSocket] 上报风速: %.1f m/s, 风向: %.1f°", windSpeed, windDirection)
+}
+
+func (w *WSClient) sendProtectionStatus(reason string) {
+	w.mu.Lock()
+	conn := w.conn
+	connected := w.connected
+	protectionEnabled := w.protectionEnabled
+	protectionActive := w.protectionActive
+	autoUnloadEnabled := w.autoUnloadEnabled
+	windSpeedThreshold := w.windSpeedThreshold
+	lastUnloadAngle := w.lastUnloadAngle
+	w.mu.Unlock()
+
+	if !connected || conn == nil {
+		return
+	}
+
+	msg := ProtectionStatusMessage{
+		Type:                "PROTECTION_STATUS",
+		DeviceID:            w.cfg.DeviceID,
+		ProtectionEnabled:   protectionEnabled,
+		ProtectionActive:    protectionActive,
+		AutoUnloadEnabled:   autoUnloadEnabled,
+		CurrentWindSpeed:    w.windSensor.GetWindSpeed(),
+		WindSpeedThreshold:  windSpeedThreshold,
+		UnloadTargetAngle:   lastUnloadAngle,
+		CurrentNacelleAngle: w.motorCtrl.GetCurrentAngle(),
+		Reason:              reason,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[WebSocket] 序列化保护状态消息失败: %v", err)
+		return
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		log.Printf("[WebSocket] 发送保护状态消息失败: %v", err)
+		w.disconnect()
+		return
+	}
+
+	log.Printf("[WebSocket] 上报保护状态: 保护=%v, 激活=%v, 风速=%.1f m/s",
+		protectionEnabled, protectionActive, w.windSensor.GetWindSpeed())
+}
+
 func (w *WSClient) sendHeartbeat() {
 	w.mu.Lock()
 	conn := w.conn
@@ -339,4 +569,43 @@ func (w *WSClient) sendHeartbeat() {
 
 func roundToOneDecimal(v float64) float64 {
 	return float64(int(v*10+0.5)) / 10
+}
+
+func getDirectionString(direction int) string {
+	switch direction {
+	case 1:
+		return "顺时针"
+	case -1:
+		return "逆时针"
+	default:
+		return "无"
+	}
+}
+
+func boolToString(b bool) string {
+	if b {
+		return "启用"
+	}
+	return "禁用"
+}
+
+func normalizeAngle(angle float64) float64 {
+	for angle < 0 {
+		angle += 360
+	}
+	for angle >= 360 {
+		angle -= 360
+	}
+	return angle
+}
+
+func shortestAngleDiff(from, to float64) float64 {
+	diff := to - from
+	for diff > 180 {
+		diff -= 360
+	}
+	for diff < -180 {
+		diff += 360
+	}
+	return diff
 }

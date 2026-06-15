@@ -15,6 +15,12 @@ function App() {
   const [targetAngle, setTargetAngle] = useState(null)
   const [online, setOnline] = useState(false)
   const [wsConnected, setWsConnected] = useState(false)
+  const [windSpeed, setWindSpeed] = useState(null)
+  const [windDirection, setWindDirection] = useState(null)
+  const [protectionEnabled, setProtectionEnabled] = useState(true)
+  const [protectionActive, setProtectionActive] = useState(false)
+  const [autoUnloadEnabled, setAutoUnloadEnabled] = useState(true)
+  const [protectionMessage, setProtectionMessage] = useState('')
   const wsRef = useRef(null)
   const reconnectTimerRef = useRef(null)
 
@@ -35,6 +41,16 @@ function App() {
       ws.onopen = () => {
         console.log('WebSocket connected')
         setWsConnected(true)
+        fetch(`${API_URL}/protection/${DEVICE_ID}/status`)
+          .then(r => r.json())
+          .then(data => {
+            if (data.code === 0 && data.data) {
+              setProtectionEnabled(data.data.protectionEnabled ?? true)
+              setProtectionActive(data.data.protectionActive ?? false)
+              setAutoUnloadEnabled(data.data.autoUnloadEnabled ?? true)
+            }
+          })
+          .catch(e => console.warn('获取保护状态失败:', e))
       }
 
       ws.onmessage = (event) => {
@@ -45,6 +61,42 @@ function App() {
             if (!isNaN(angle)) {
               setCurrentAngle(angle)
               setOnline(true)
+            }
+          } else if (message.type === 'WIND_SPEED_REPORT' && message.deviceId === DEVICE_ID) {
+            const speed = parseFloat(message.windSpeed ?? message.data)
+            const dir = parseFloat(message.windDirection ?? 0)
+            if (!isNaN(speed)) {
+              setWindSpeed(speed)
+              setWindDirection(dir)
+            }
+          } else if (message.type === 'PROTECTION_STATUS' && message.deviceId === DEVICE_ID) {
+            if (message.protectionEnabled !== undefined) {
+              setProtectionEnabled(message.protectionEnabled)
+            }
+            if (message.protectionActive !== undefined) {
+              setProtectionActive(message.protectionActive)
+            }
+            if (message.autoUnloadEnabled !== undefined) {
+              setAutoUnloadEnabled(message.autoUnloadEnabled)
+            }
+            if (message.currentWindSpeed !== undefined && !isNaN(parseFloat(message.currentWindSpeed))) {
+              setWindSpeed(parseFloat(message.currentWindSpeed))
+            }
+            if (message.reason) {
+              setProtectionMessage(message.reason)
+              if (message.protectionActive) {
+                setTimeout(() => setProtectionMessage(''), 5000)
+              }
+            }
+          } else if (message.type === 'SAFE_SET_ANGLE' && message.deviceId === DEVICE_ID) {
+            const optimized = parseFloat(message.optimizedTargetAngle ?? message.targetAngle ?? message.data)
+            if (!isNaN(optimized)) {
+              setTargetAngle(optimized)
+            }
+          } else if (message.type === 'SET_ANGLE' && message.deviceId === DEVICE_ID) {
+            const angle = parseFloat(message.angle ?? message.targetAngle ?? message.data)
+            if (!isNaN(angle)) {
+              setTargetAngle(angle)
             }
           }
         } catch (err) {
@@ -100,6 +152,10 @@ function App() {
   }, [])
 
   const sendTargetAngle = useCallback(async (angle) => {
+    if (protectionActive) {
+      console.warn('强风保护中，手动控制已锁定')
+      return
+    }
     try {
       const response = await fetch(`${API_URL}/yaw/${DEVICE_ID}/angle`, {
         method: 'PUT',
@@ -109,14 +165,59 @@ function App() {
         body: JSON.stringify({ angle }),
       })
       if (response.ok) {
-        setTargetAngle(angle)
+        const result = await response.json()
+        if (result.code === 0) {
+          setTargetAngle(angle)
+        } else {
+          console.error('设置角度失败:', result.message)
+        }
       } else {
         console.error('Failed to set target angle')
       }
     } catch (err) {
       console.error('Failed to send target angle:', err)
     }
-  }, [])
+  }, [protectionActive])
+
+  const toggleProtection = useCallback(async () => {
+    const newEnabled = !protectionEnabled
+    const endpoint = newEnabled ? 'enable' : 'disable'
+    try {
+      const response = await fetch(`${API_URL}/protection/${DEVICE_ID}/${endpoint}`, {
+        method: 'PUT',
+      })
+      const result = await response.json()
+      if (result.code === 0) {
+        setProtectionEnabled(newEnabled)
+      } else {
+        console.warn('切换保护状态失败:', result.message)
+      }
+    } catch (err) {
+      console.error('Failed to toggle protection:', err)
+    }
+  }, [protectionEnabled])
+
+  const toggleAutoUnload = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/protection/${DEVICE_ID}/config`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          autoUnloadEnabled: !autoUnloadEnabled,
+        }),
+      })
+      const result = await response.json()
+      if (result.code === 0) {
+        setAutoUnloadEnabled(!autoUnloadEnabled)
+      } else {
+        console.warn('切换自动卸载失败:', result.message)
+      }
+    } catch (err) {
+      console.error('Failed to toggle auto unload:', err)
+    }
+  }, [autoUnloadEnabled])
 
   useEffect(() => {
     connectWebSocket()
@@ -165,6 +266,63 @@ function App() {
           </div>
         </header>
 
+        {windSpeed !== null && (
+          <div className="flex gap-4 mb-6 justify-center">
+            <div className="bg-ocean-800/50 backdrop-blur border border-ocean-600/50 rounded-xl px-6 py-3">
+              <div className="text-ocean-300 text-sm mb-1">实时风速</div>
+              <div className={`text-3xl font-bold ${windSpeed >= 25 ? 'text-red-400' : windSpeed >= 15 ? 'text-amber-400' : 'text-white'}`}>
+                {windSpeed.toFixed(1)} <span className="text-lg">m/s</span>
+              </div>
+              {windSpeed >= 25 && (
+                <div className="text-red-400 text-xs mt-1 animate-pulse">🌪️ 大风预警！</div>
+              )}
+            </div>
+            {windDirection !== null && (
+              <div className="bg-ocean-800/50 backdrop-blur border border-ocean-600/50 rounded-xl px-6 py-3">
+                <div className="text-ocean-300 text-sm mb-1">当前风向</div>
+                <div className="text-3xl font-bold text-white">
+                  {windDirection.toFixed(0)} <span className="text-lg">°</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex gap-3 mb-6 justify-center">
+          <button
+            onClick={toggleProtection}
+            disabled={protectionActive}
+            className={`px-5 py-2.5 rounded-lg font-medium transition-all ${
+              protectionActive
+                ? 'bg-gray-600 cursor-not-allowed text-gray-400'
+                : protectionEnabled
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                : 'bg-gray-600 hover:bg-gray-700 text-white'
+            }`}
+          >
+            {protectionActive ? '保护已激活' : protectionEnabled ? '✓ 保护开启' : '✗ 保护关闭'}
+          </button>
+          <button
+            onClick={toggleAutoUnload}
+            disabled={!protectionEnabled || protectionActive}
+            className={`px-5 py-2.5 rounded-lg font-medium transition-all ${
+              !protectionEnabled || protectionActive
+                ? 'bg-gray-600 cursor-not-allowed text-gray-400'
+                : autoUnloadEnabled
+                ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                : 'bg-gray-600 hover:bg-gray-700 text-white'
+            }`}
+          >
+            {autoUnloadEnabled ? '✓ 自动卸载' : '✗ 自动卸载'}
+          </button>
+        </div>
+
+        {protectionActive && protectionMessage && (
+          <div className="mb-4 px-6 py-3 bg-red-500/20 border border-red-500 rounded-lg text-red-300 font-medium animate-pulse text-center">
+            {protectionMessage}
+          </div>
+        )}
+
         <div className="glass-panel p-8 shadow-glow-lg">
           <Compass
             currentAngle={currentAngle}
@@ -172,6 +330,7 @@ function App() {
             onTargetAngleChange={sendTargetAngle}
             deviceStatus={getDeviceStatus()}
             online={online}
+            protectionActive={protectionActive}
           />
         </div>
 

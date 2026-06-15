@@ -28,6 +28,7 @@ type MotorConfig struct {
 type ReportConfig struct {
 	CurrentAngleIntervalMs int `yaml:"current_angle_interval_ms"`
 	HeartbeatIntervalSec   int `yaml:"heartbeat_interval_sec"`
+	WindSpeedIntervalMs    int `yaml:"wind_speed_interval_ms"`
 }
 
 type Config struct {

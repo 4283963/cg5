@@ -23,3 +23,4 @@ motor:
 report:
   current_angle_interval_ms: 1000
   heartbeat_interval_sec: 5
+  wind_speed_interval_ms: 2000

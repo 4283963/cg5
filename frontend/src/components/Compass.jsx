@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 
-const Compass = ({ currentAngle, targetAngle, onTargetAngleChange, deviceStatus, online }) => {
+const Compass = ({ currentAngle, targetAngle, onTargetAngleChange, deviceStatus, online, protectionActive }) => {
   const svgRef = useRef(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragAngle, setDragAngle] = useState(null)
@@ -22,19 +22,28 @@ const Compass = ({ currentAngle, targetAngle, onTargetAngleChange, deviceStatus,
   }, [])
 
   const handleMouseDown = useCallback((e) => {
+    if (protectionActive) {
+      console.warn('强风保护中，手动控制已锁定')
+      return
+    }
     e.preventDefault()
     setIsDragging(true)
     const angle = getAngleFromPoint(e.clientX, e.clientY)
     setDragAngle(angle)
-  }, [getAngleFromPoint])
+  }, [getAngleFromPoint, protectionActive])
 
   const handleMouseMove = useCallback((e) => {
-    if (!isDragging) return
+    if (!isDragging || protectionActive) return
     const angle = getAngleFromPoint(e.clientX, e.clientY)
     setDragAngle(angle)
-  }, [isDragging, getAngleFromPoint])
+  }, [isDragging, getAngleFromPoint, protectionActive])
 
   const handleMouseUp = useCallback(() => {
+    if (protectionActive) {
+      setIsDragging(false)
+      setDragAngle(null)
+      return
+    }
     if (isDragging && dragAngle !== null) {
       let normalizedAngle = dragAngle
       if (normalizedAngle > 180) normalizedAngle -= 360
@@ -42,25 +51,34 @@ const Compass = ({ currentAngle, targetAngle, onTargetAngleChange, deviceStatus,
     }
     setIsDragging(false)
     setDragAngle(null)
-  }, [isDragging, dragAngle, onTargetAngleChange])
+  }, [isDragging, dragAngle, onTargetAngleChange, protectionActive])
 
   const handleTouchStart = useCallback((e) => {
+    if (protectionActive) {
+      console.warn('强风保护中，手动控制已锁定')
+      return
+    }
     e.preventDefault()
     const touch = e.touches[0]
     setIsDragging(true)
     const angle = getAngleFromPoint(touch.clientX, touch.clientY)
     setDragAngle(angle)
-  }, [getAngleFromPoint])
+  }, [getAngleFromPoint, protectionActive])
 
   const handleTouchMove = useCallback((e) => {
-    if (!isDragging) return
+    if (!isDragging || protectionActive) return
     e.preventDefault()
     const touch = e.touches[0]
     const angle = getAngleFromPoint(touch.clientX, touch.clientY)
     setDragAngle(angle)
-  }, [isDragging, getAngleFromPoint])
+  }, [isDragging, getAngleFromPoint, protectionActive])
 
   const handleTouchEnd = useCallback(() => {
+    if (protectionActive) {
+      setIsDragging(false)
+      setDragAngle(null)
+      return
+    }
     if (isDragging && dragAngle !== null) {
       let normalizedAngle = dragAngle
       if (normalizedAngle > 180) normalizedAngle -= 360
@@ -68,7 +86,7 @@ const Compass = ({ currentAngle, targetAngle, onTargetAngleChange, deviceStatus,
     }
     setIsDragging(false)
     setDragAngle(null)
-  }, [isDragging, dragAngle, onTargetAngleChange])
+  }, [isDragging, dragAngle, onTargetAngleChange, protectionActive])
 
   useEffect(() => {
     if (isDragging) {
@@ -246,8 +264,63 @@ const Compass = ({ currentAngle, targetAngle, onTargetAngleChange, deviceStatus,
           <circle cx={centerX} cy={centerY} r="100" fill="none" stroke="#38bdf8" strokeWidth="1" opacity="0.2" strokeDasharray="4 4" />
 
           {currentAngle != null && online && renderPointer(displayCurrentAngle, '#22c55e', null, false)}
-          {targetAngle != null && renderPointer(displayTargetAngle, '#ef4444', null, true)}
-          {targetAngle == null && !isDragging && renderPointer(0, '#ef4444', null, true)}
+          {targetAngle != null && renderPointer(displayTargetAngle, '#ef4444', null, !protectionActive)}
+          {targetAngle == null && !isDragging && renderPointer(0, '#ef4444', null, !protectionActive)}
+
+          {protectionActive && (
+            <g>
+              <circle
+                cx={centerX}
+                cy={centerY}
+                r="85"
+                fill="rgba(239, 68, 68, 0.1)"
+                stroke="#ef4444"
+                strokeWidth="2"
+                strokeDasharray="8 4"
+                className="animate-spin"
+                style={{ transformOrigin: `${centerX}px ${centerY}px`, animationDuration: '4s' }}
+              />
+              <circle
+                cx={centerX}
+                cy={centerY}
+                r="65"
+                fill="rgba(239, 68, 68, 0.2)"
+                stroke="#ef4444"
+                strokeWidth="1"
+                className="animate-pulse"
+              />
+              <rect
+                x={centerX - 120}
+                y={centerY - 25}
+                width="240"
+                height="50"
+                rx="8"
+                fill="rgba(0, 0, 0, 0.7)"
+                stroke="#ef4444"
+                strokeWidth="2"
+              />
+              <text
+                x={centerX}
+                y={centerY - 5}
+                fill="#ef4444"
+                fontSize="14"
+                fontWeight="bold"
+                textAnchor="middle"
+                className="animate-pulse"
+              >
+                ⚠️ 强风保护中
+              </text>
+              <text
+                x={centerX}
+                y={centerY + 15}
+                fill="#fca5a5"
+                fontSize="11"
+                textAnchor="middle"
+              >
+                手动控制已锁定
+              </text>
+            </g>
+          )}
         </svg>
       </div>
 
@@ -278,7 +351,13 @@ const Compass = ({ currentAngle, targetAngle, onTargetAngleChange, deviceStatus,
       </div>
 
       <div className="mt-4 text-ocean-300 text-sm text-center">
-        拖动红色箭头设置目标角度
+        {protectionActive ? (
+          <span className="text-red-400 font-medium animate-pulse">
+            ⚠️ 强风保护已激活，手动控制已锁定
+          </span>
+        ) : (
+          '拖动红色箭头设置目标角度'
+        )}
       </div>
     </div>
   )

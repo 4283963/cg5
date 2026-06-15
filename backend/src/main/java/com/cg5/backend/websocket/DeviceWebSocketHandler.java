@@ -49,6 +49,9 @@ public class DeviceWebSocketHandler extends TextWebSocketHandler {
             String type = json.getString("type");
             if ("STATUS_REPORT".equals(type)) {
                 Double angle = json.getDouble("data");
+                if (angle == null) {
+                    angle = json.getDouble("angle");
+                }
                 if (angle != null) {
                     sessionManager.updateDeviceCurrentAngle(deviceId, angle);
                 }
@@ -60,6 +63,30 @@ public class DeviceWebSocketHandler extends TextWebSocketHandler {
                 if (angle != null) {
                     sessionManager.updateDeviceCurrentAngle(deviceId, angle);
                 }
+            } else if ("WIND_SPEED_REPORT".equals(type)) {
+                Double windSpeed = json.getDouble("windSpeed");
+                if (windSpeed == null) {
+                    windSpeed = json.getDouble("data");
+                }
+                Double windDirection = json.getDouble("windDirection");
+                if (windDirection == null) {
+                    windDirection = 0.0;
+                }
+                if (windSpeed != null) {
+                    sessionManager.updateDeviceWindSpeed(deviceId, windSpeed, windDirection);
+                }
+            } else if ("PROTECTION_STATUS".equals(type)) {
+                sessionManager.updateProtectionStatus(
+                        deviceId,
+                        json.getBoolean("protectionEnabled"),
+                        json.getBoolean("protectionActive"),
+                        json.getBoolean("autoUnloadEnabled"),
+                        json.getDouble("currentWindSpeed"),
+                        json.getDouble("windSpeedThreshold"),
+                        json.getDouble("unloadTargetAngle"),
+                        json.getDouble("currentNacelleAngle"),
+                        json.getString("reason")
+                );
             } else {
                 log.debug("Received message from device {}: {}", deviceId, message.getPayload());
             }
