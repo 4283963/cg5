@@ -2,9 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import Compass from './components/Compass'
 
 const DEVICE_ID = 'device001'
-const WS_URL = 'ws://localhost:8080/ws/admin'
 const API_URL = '/api'
 const ALIGN_THRESHOLD = 2
+
+function getWsUrl() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/ws/admin`
+}
 
 function App() {
   const [currentAngle, setCurrentAngle] = useState(null)
@@ -24,7 +28,8 @@ function App() {
 
   const connectWebSocket = useCallback(() => {
     try {
-      const ws = new WebSocket(WS_URL)
+      const wsUrl = getWsUrl()
+      const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
       ws.onopen = () => {

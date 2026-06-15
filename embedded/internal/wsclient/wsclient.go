@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"sync"
 	"time"
@@ -14,10 +15,15 @@ import (
 )
 
 type TargetAngleMessage struct {
-	Type     string  `json:"type"`
-	DeviceID string  `json:"deviceId"`
-	Angle    float64 `json:"angle"`
-	Data     float64 `json:"data"`
+	Type            string  `json:"type"`
+	DeviceID        string  `json:"deviceId"`
+	Angle           float64 `json:"angle"`
+	Data            float64 `json:"data"`
+	TargetAngle     float64 `json:"targetAngle"`
+	CurrentAngle    float64 `json:"currentAngle"`
+	ShortestDiff    float64 `json:"shortestDiff"`
+	RotationDirection int   `json:"rotationDirection"`
+	RotationDegrees float64 `json:"rotationDegrees"`
 }
 
 type CurrentAngleMessage struct {
@@ -202,8 +208,65 @@ func (w *WSClient) handleMessage(msg []byte) {
 		}
 		log.Printf("[WebSocket] 收到目标角度指令: %.2f°", angle)
 		w.motorCtrl.SetTargetAngle(angle)
+
+	case "SAFE_SET_ANGLE":
+		var target TargetAngleMessage
+		if err := json.Unmarshal(msg, &target); err != nil {
+			log.Printf("[WebSocket] 解析安全目标角度消息失败: %v", err)
+			return
+		}
+
+		log.Printf("========================================")
+		log.Printf("🔒 收到安全角度指令 (SAFE_SET_ANGLE)")
+		log.Printf("  设备ID:         %s", target.DeviceID)
+		log.Printf("  当前角度:       %.2f°", target.CurrentAngle)
+		log.Printf("  目标角度:       %.2f°", target.TargetAngle)
+		log.Printf("  最短路径差值:   %.2f°", target.ShortestDiff)
+		log.Printf("  旋转方向:       %s", getDirectionString(target.RotationDirection))
+		log.Printf("  预计旋转度数:   %.2f°", target.RotationDegrees)
+		log.Printf("========================================")
+
+		localCurrentAngle := w.motorCtrl.GetCurrentAngle()
+		naiveDiff := target.TargetAngle - localCurrentAngle
+		if math.Abs(naiveDiff) > math.Abs(target.ShortestDiff)+1.0 {
+			log.Printf("⚠️  安全校验: 本地简单差值 %.2f° 与后端最短路径差值 %.2f° 不符，已采用后端安全路径！",
+				naiveDiff, target.ShortestDiff)
+		}
+
+		if math.Abs(target.ShortestDiff) > 180.0 {
+			log.Printf("❌ 安全拦截: 旋转角度 %.2f° 超过最大安全限制 180°，指令已拒绝！",
+				math.Abs(target.ShortestDiff))
+			return
+		}
+
+		finalAngle := target.TargetAngle
+		if finalAngle == 0 && target.Data != 0 {
+			finalAngle = target.Data
+		}
+		if finalAngle == 0 && target.Angle != 0 {
+			finalAngle = target.Angle
+		}
+
+		log.Printf("[WebSocket] 执行安全目标角度指令: %.2f° (方向: %s, 旋转: %.2f°)",
+			finalAngle,
+			getDirectionString(target.RotationDirection),
+			math.Abs(target.RotationDegrees))
+
+		w.motorCtrl.SetTargetAngle(finalAngle)
+
 	default:
 		log.Printf("[WebSocket] 收到未知消息类型: %s, 原始消息: %s", base.Type, string(msg))
+	}
+}
+
+func getDirectionString(direction int) string {
+	switch direction {
+	case 1:
+		return "顺时针"
+	case -1:
+		return "逆时针"
+	default:
+		return "无"
 	}
 }
 

@@ -7,6 +7,10 @@ public class DeviceStatus {
     private Boolean online;
     private Long lastUpdateTime;
 
+    private Double shortestDiff;
+    private Integer rotationDirection;
+    private Double rotationDegrees;
+
     public DeviceStatus() {
     }
 
@@ -56,5 +60,29 @@ public class DeviceStatus {
 
     public void setLastUpdateTime(Long lastUpdateTime) {
         this.lastUpdateTime = lastUpdateTime;
+    }
+
+    public Double getShortestDiff() {
+        return shortestDiff;
+    }
+
+    public void setShortestDiff(Double shortestDiff) {
+        this.shortestDiff = shortestDiff;
+    }
+
+    public Integer getRotationDirection() {
+        return rotationDirection;
+    }
+
+    public void setRotationDirection(Integer rotationDirection) {
+        this.rotationDirection = rotationDirection;
+    }
+
+    public Double getRotationDegrees() {
+        return rotationDegrees;
+    }
+
+    public void setRotationDegrees(Double rotationDegrees) {
+        this.rotationDegrees = rotationDegrees;
     }
 }

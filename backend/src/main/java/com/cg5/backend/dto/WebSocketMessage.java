@@ -6,6 +6,12 @@ public class WebSocketMessage {
     private Object data;
     private Long timestamp;
 
+    private Double targetAngle;
+    private Double currentAngle;
+    private Double shortestDiff;
+    private Integer rotationDirection;
+    private Double rotationDegrees;
+
     public WebSocketMessage() {
     }
 
@@ -48,11 +54,70 @@ public class WebSocketMessage {
         this.timestamp = timestamp;
     }
 
+    public Double getTargetAngle() {
+        return targetAngle;
+    }
+
+    public void setTargetAngle(Double targetAngle) {
+        this.targetAngle = targetAngle;
+    }
+
+    public Double getCurrentAngle() {
+        return currentAngle;
+    }
+
+    public void setCurrentAngle(Double currentAngle) {
+        this.currentAngle = currentAngle;
+    }
+
+    public Double getShortestDiff() {
+        return shortestDiff;
+    }
+
+    public void setShortestDiff(Double shortestDiff) {
+        this.shortestDiff = shortestDiff;
+    }
+
+    public Integer getRotationDirection() {
+        return rotationDirection;
+    }
+
+    public void setRotationDirection(Integer rotationDirection) {
+        this.rotationDirection = rotationDirection;
+    }
+
+    public Double getRotationDegrees() {
+        return rotationDegrees;
+    }
+
+    public void setRotationDegrees(Double rotationDegrees) {
+        this.rotationDegrees = rotationDegrees;
+    }
+
     public static WebSocketMessage createAngleCommand(String deviceId, Double angle) {
         WebSocketMessage msg = new WebSocketMessage();
         msg.setType("SET_ANGLE");
         msg.setDeviceId(deviceId);
         msg.setData(angle);
+        msg.setTimestamp(System.currentTimeMillis());
+        return msg;
+    }
+
+    public static WebSocketMessage createSafeAngleCommand(String deviceId,
+                                                          Double currentAngle,
+                                                          Double targetAngle,
+                                                          Double shortestDiff,
+                                                          Integer rotationDirection,
+                                                          Double rotationDegrees) {
+        WebSocketMessage msg = new WebSocketMessage();
+        msg.setType("SAFE_SET_ANGLE");
+        msg.setDeviceId(deviceId);
+        msg.setTargetAngle(targetAngle);
+        msg.setCurrentAngle(currentAngle);
+        msg.setShortestDiff(shortestDiff);
+        msg.setRotationDirection(rotationDirection);
+        msg.setRotationDegrees(rotationDegrees);
+        msg.setData(targetAngle);
         msg.setTimestamp(System.currentTimeMillis());
         return msg;
     }

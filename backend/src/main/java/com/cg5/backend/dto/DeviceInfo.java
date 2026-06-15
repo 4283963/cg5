@@ -4,6 +4,7 @@ public class DeviceInfo {
     private String deviceId;
     private Boolean online;
     private Long connectTime;
+    private Double currentAngle;
 
     public DeviceInfo() {
     }
@@ -36,5 +37,13 @@ public class DeviceInfo {
 
     public void setConnectTime(Long connectTime) {
         this.connectTime = connectTime;
+    }
+
+    public Double getCurrentAngle() {
+        return currentAngle;
+    }
+
+    public void setCurrentAngle(Double currentAngle) {
+        this.currentAngle = currentAngle;
     }
 }
