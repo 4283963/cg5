@@ -1,0 +1,25 @@
+# 串口配置
+serial:
+  port: "/dev/ttyUSB0"
+  baud_rate: 9600
+  data_bits: 8
+  stop_bits: 1
+  parity: "N"
+  use_mock: true
+
+# 设备ID
+device_id: "device001"
+
+# 后端WebSocket地址
+backend:
+  ws_url: "ws://localhost:8080/ws/device"
+
+# 电机配置
+motor:
+  speed_deg_per_sec: 10.0
+  tolerance_deg: 0.5
+
+# 上报配置
+report:
+  current_angle_interval_ms: 1000
+  heartbeat_interval_sec: 5
